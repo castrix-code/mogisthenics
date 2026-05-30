@@ -23,6 +23,7 @@ export default function App() {
 
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const [videoStatus, setVideoStatus] = useState<'idle' | 'connecting' | 'connected' | 'failed'>('idle');
   const [partnerPrimary, setPartnerPrimary] = useState(0);
   const [partnerSecondary, setPartnerSecondary] = useState(0);
   const [result, setResult] = useState<RoundResult | null>(null);
@@ -71,11 +72,14 @@ export default function App() {
       // Round starts immediately for both players — does NOT wait on video.
       startRound();
 
-      // Best-effort video: the initiator calls; remote stream just populates
-      // the partner panel if/when it arrives.
+      // Best-effort video: the initiator calls; remote stream populates the
+      // partner panel if/when it arrives. Failures are shown in the UI.
+      setVideoStatus('connecting');
       if (data.initiator && peerRef.current && streamRef.current) {
         const call = peerRef.current.call(data.partnerPeerId, streamRef.current);
-        call.on('stream', setRemoteStream);
+        call.on('stream', (s) => { setRemoteStream(s); setVideoStatus('connected'); });
+        call.on('error', (err) => { console.error('[PeerJS call error]', err); setVideoStatus('failed'); });
+        call.on('close', () => { setRemoteStream(null); });
       }
     });
 
@@ -162,10 +166,12 @@ export default function App() {
       socket.emit('join_queue', { username: name, peerId, mode: selectedMode });
     });
 
-    // Non-initiator answers; remote stream just fills the partner panel.
+    // Non-initiator: answer the call when it comes in.
     peer.on('call', (call: MediaConnection) => {
       call.answer(stream);
-      call.on('stream', setRemoteStream);
+      call.on('stream', (s) => { setRemoteStream(s); setVideoStatus('connected'); });
+      call.on('error', (err) => { console.error('[PeerJS answer error]', err); setVideoStatus('failed'); });
+      call.on('close', () => { setRemoteStream(null); });
     });
 
     peer.on('error', console.error);
@@ -182,6 +188,7 @@ export default function App() {
     setPartnerPrimary(0);
     setPartnerSecondary(0);
     setRemoteStream(null);
+    setVideoStatus('idle');
     setResult(null);
     setTimerRunning(false);
   }, [rep, pose]);
@@ -306,6 +313,7 @@ export default function App() {
           secondaryValue={partnerSecondary}
           secondaryLabel={mySecondaryLabel}
           secondaryIsScore
+          videoStatus={videoStatus}
         />
       </div>
 
