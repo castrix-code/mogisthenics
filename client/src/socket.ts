@@ -27,32 +27,51 @@ export function peerOptions(): PeerOptions {
   //               Twilio Network Traversal Service (free trial)
   const turnUrls = import.meta.env.VITE_TURN_URLS
     ? import.meta.env.VITE_TURN_URLS.split(',').map((s: string) => s.trim())
-    : [
+    : null;
+  const turnUsername = import.meta.env.VITE_TURN_USERNAME ?? null;
+  const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL ?? null;
+
+  // Always log the resolved TURN config so it's visible in DevTools → Console.
+  // This makes it easy to confirm credentials are present in the production build.
+  console.log('[TURN config]', {
+    urls: turnUrls,
+    username: turnUsername ? '(set)' : '(missing)',
+    credential: turnCredential ? '(set)' : '(missing)',
+  });
+
+  // Build the iceServers list. If env-var TURN credentials are available, use
+  // them as the primary relay. Always add openrelay as a hardcoded fallback so
+  // there's at least one relay candidate even if Vercel env vars aren't set.
+  const iceServers: RTCIceServer[] = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    // Hardcoded openrelay as a guaranteed fallback relay.
+    {
+      urls: [
         'turn:openrelay.metered.ca:80',
         'turn:openrelay.metered.ca:443',
         'turn:openrelay.metered.ca:443?transport=tcp',
-        'turns:openrelay.metered.ca:443?transport=tcp',
-      ];
-  const turnUsername = import.meta.env.VITE_TURN_USERNAME || 'openrelayproject';
-  const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL || 'openrelayproject';
+      ],
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+  ];
+
+  // If real TURN credentials are provided via env vars, prepend them so they
+  // are tried first (they will be more reliable than the free fallback).
+  if (turnUrls && turnUsername && turnCredential) {
+    iceServers.unshift({ urls: turnUrls, username: turnUsername, credential: turnCredential });
+  }
 
   return {
     host: url.hostname,
     port: url.port ? Number(url.port) : secure ? 443 : 80,
     path: '/peerjs',
     secure,
-    debug: import.meta.env.DEV ? 2 : 0,
-    config: {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun3.l.google.com:19302' },
-        { urls: 'stun:stun4.l.google.com:19302' },
-        { urls: turnUrls, username: turnUsername, credential: turnCredential },
-      ],
-      // Wait longer for ICE to find a relay path before giving up.
-      iceCandidatePoolSize: 10,
-    },
+    debug: 2, // always on so ICE negotiation is visible in DevTools console
+    config: { iceServers, iceCandidatePoolSize: 10 },
   };
 }
