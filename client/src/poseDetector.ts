@@ -40,12 +40,14 @@ export function calcAngle(
   return angle;
 }
 
-// Draw skeleton on canvas
+// Draw skeleton on canvas. `skeletonColor` lets callers signal form state —
+// e.g. green when the rep is valid, amber when the body isn't in position.
 export function drawPose(
   canvas: HTMLCanvasElement,
   result: PoseLandmarkerResult,
   videoWidth: number,
-  videoHeight: number
+  videoHeight: number,
+  skeletonColor = '#00ff88'
 ) {
   const ctx = canvas.getContext('2d');
   if (!ctx || !result.landmarks.length) return;
@@ -57,25 +59,64 @@ export function drawPose(
   const drawingUtils = new DrawingUtils(ctx);
   for (const landmarks of result.landmarks) {
     drawingUtils.drawConnectors(landmarks, PoseLandmarker.POSE_CONNECTIONS, {
-      color: '#00ff88',
+      color: skeletonColor,
       lineWidth: 2,
     });
     drawingUtils.drawLandmarks(landmarks, {
-      color: '#ff4444',
+      color: '#ffffff',
       lineWidth: 1,
       radius: 3,
     });
   }
 }
 
+// Real-time coaching cue for the pushup form overlay, derived from the current
+// elbow angle + validity. `tone` drives the on-screen color.
+export type PushupCue = { text: string; tone: 'idle' | 'down' | 'up' | 'invalid' };
+export function pushupCue(m: { elbowAngle: number; valid: boolean }): PushupCue {
+  if (!m.valid) return { text: 'GET IN POSITION', tone: 'invalid' };
+  if (m.elbowAngle > 150) return { text: 'GO DOWN', tone: 'down' };
+  if (m.elbowAngle < 85) return { text: 'PUSH UP!', tone: 'up' };
+  return { text: 'KEEP GOING', tone: 'down' };
+}
+
+// A MediaPipe normalized landmark. `visibility` (0–1) is the model's confidence
+// that the joint is actually present in frame; we use it to reject phantom poses.
+export type Landmark = { x: number; y: number; z: number; visibility?: number };
+
+// Are every one of the given landmark indices confidently tracked this frame?
+// MediaPipe still emits a full 33-point skeleton when no one (or only part of a
+// body) is in view, but those points carry low visibility — gating on this is
+// the single biggest defense against glitch reps.
+export function keypointsVisible(
+  landmarks: Landmark[],
+  indices: number[],
+  threshold = 0.5
+): boolean {
+  return indices.every((i) => (landmarks[i]?.visibility ?? 0) >= threshold);
+}
+
+// Torso tilt from the vertical axis in degrees (0 = upright, 90 = horizontal).
+function torsoTilt(lm: Landmark[]): number {
+  const sx = (lm[11].x + lm[12].x) / 2;
+  const sy = (lm[11].y + lm[12].y) / 2;
+  const hx = (lm[23].x + lm[24].x) / 2;
+  const hy = (lm[23].y + lm[24].y) / 2;
+  return Math.abs((Math.atan2(hx - sx, hy - sy) * 180) / Math.PI);
+}
+
 // Pushup rep counter using elbow angle
 // State machine: up (angle > 150) -> down (angle < 80) -> up = 1 rep
 export type RepState = 'up' | 'down';
 
-export function calcPushupMetrics(landmarks: { x: number; y: number; z: number }[]): {
+// Joints that must be tracked for a rep to count: both arms, shoulders, hips.
+const PUSHUP_KEYPOINTS = [11, 12, 13, 14, 15, 16, 23, 24];
+
+export function calcPushupMetrics(landmarks: Landmark[]): {
   elbowAngle: number;
   backStraightness: number; // 0-100, higher is better
   depth: number; // 0-100 based on elbow angle
+  valid: boolean; // body is in a real, fully-tracked pushup position this frame
 } | null {
   if (!landmarks || landmarks.length < 33) return null;
 
@@ -104,5 +145,21 @@ export function calcPushupMetrics(landmarks: { x: number; y: number; z: number }
   // Depth: how low they go — map elbow angle 160->80 to 0->100
   const depth = Math.max(0, Math.min(100, ((160 - elbowAngle) / 80) * 100));
 
-  return { elbowAngle, backStraightness, depth };
+  // ── Validity gates (anti-glitch / anti-cheat) ──────────────────────────────
+  // A frame only counts toward reps if it looks like a genuine pushup:
+  //  1) every arm/torso joint is confidently tracked (no phantom skeletons),
+  //  2) both arms agree — a single waving arm produces lopsided elbow angles,
+  //  3) hands are planted at/below shoulder height (on the floor, not overhead),
+  //  4) the body isn't standing bolt-upright flapping the arms.
+  // The orientation check (4) is deliberately loose so pushups facing the
+  // camera (where the torso looks near-vertical in 2D) still register.
+  const visible = keypointsVisible(landmarks, PUSHUP_KEYPOINTS, 0.5);
+  const symmetric = Math.abs(leftAngle - rightAngle) < 45;
+  const wristY = (lw.y + rw.y) / 2;
+  const shoulderY = (ls.y + rs.y) / 2;
+  const handsOnFloor = wristY > shoulderY - 0.15;
+  const notUpright = torsoTilt(landmarks) > 20;
+  const valid = visible && symmetric && handsOnFloor && notUpright;
+
+  return { elbowAngle, backStraightness, depth, valid };
 }

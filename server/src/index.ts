@@ -76,7 +76,78 @@ const queues: Record<GameModeId, string[]> = {
 const players = new Map<string, Player>(); // socketId -> Player
 const rooms = new Map<string, Room>();
 
+// Lobby auth/presence (separate from in-match `players`): an authenticated
+// socket maps to a verified username, and each username may have several sockets
+// (multiple tabs). Used for the friends list + live challenge routing.
+const socketUser = new Map<string, string>(); // socketId -> username
+const online = new Map<string, Set<string>>(); // username -> socketIds
+
+// One outstanding incoming challenge per user (keyed by the challenged user).
+interface PendingChallenge {
+  fromUser: string;
+  fromSocket: string;
+  fromPeerId: string;
+  mode: GameModeId;
+}
+const pendingChallenges = new Map<string, PendingChallenge>(); // addressee -> challenge
+
+const socketsFor = (username: string): string[] => Array.from(online.get(username) ?? []);
+const isOnline = (username: string): boolean => (online.get(username)?.size ?? 0) > 0;
+
 const generateRoomId = () => Math.random().toString(36).slice(2, 10);
+
+// Push a fresh friends + incoming-requests snapshot to one socket.
+async function emitFriendData(socketId: string, username: string) {
+  try {
+    const [friendsRes, reqRes] = await Promise.all([
+      supabase.rpc('mog_list_friends', { p_user: username }),
+      supabase.rpc('mog_list_friend_requests', { p_user: username }),
+    ]);
+    const friends = (friendsRes.data ?? []).map((f: { username: string }) => ({
+      ...f,
+      online: isOnline(f.username),
+    }));
+    io.to(socketId).emit('friends_data', { friends, requests: reqRes.data ?? [] });
+  } catch (e) {
+    console.error('friends_data error:', e);
+  }
+}
+
+// Refresh every connected socket belonging to a user.
+async function refreshUser(username: string) {
+  for (const sid of socketsFor(username)) await emitFriendData(sid, username);
+}
+
+// Tell a user's online friends that their presence changed.
+async function broadcastPresence(username: string, isOnlineNow: boolean) {
+  try {
+    const { data } = await supabase.rpc('mog_list_friends', { p_user: username });
+    for (const f of (data ?? []) as { username: string }[]) {
+      for (const sid of socketsFor(f.username)) {
+        io.to(sid).emit('friend_presence', { username, online: isOnlineNow });
+      }
+    }
+  } catch (e) {
+    console.error('presence error:', e);
+  }
+}
+
+// Verify a Supabase access token and return the player's *real* username from
+// their auth profile. The client can lie about its username, so the leaderboard
+// must only ever trust the name baked into a validly-signed JWT. Returns null
+// for missing/invalid/expired tokens or accounts without a username.
+async function verifyUsername(token: string | undefined): Promise<string | null> {
+  if (!token) return null;
+  try {
+    const { data, error } = await supabase.auth.getUser(token);
+    if (error || !data.user) return null;
+    const username = (data.user.user_metadata as { username?: string } | null)?.username;
+    return typeof username === 'string' && username.trim().length >= 2 ? username.trim() : null;
+  } catch (e) {
+    console.error('auth verify failed:', e);
+    return null;
+  }
+}
 
 function findRoom(socketId: string): [string, Room] | null {
   for (const [id, room] of rooms) {
@@ -198,12 +269,157 @@ async function coachingTip(mode: GameModeId, pose: string | null, score: number)
 io.on('connection', (socket) => {
   console.log(`[+] ${socket.id} connected`);
 
-  socket.on('join_queue', async (data: { username: string; peerId: string; mode: GameModeId }) => {
+  // ── Lobby auth: identify the socket so friend/challenge actions are trusted ──
+  socket.on('authenticate', async (data: { token?: string }) => {
+    const username = await verifyUsername(data.token);
+    if (!username) {
+      socket.emit('auth_error', 'Session expired — log in again.');
+      return;
+    }
+    socketUser.set(socket.id, username);
+    if (!online.has(username)) online.set(username, new Set());
+    online.get(username)!.add(socket.id);
+
+    // Make sure the player exists for friend lookups (idempotent).
+    supabase.rpc('mog_register_player', { p_username: username }).then(
+      () => {},
+      (e: unknown) => console.error('register error', e)
+    );
+
+    socket.emit('authenticated', { username });
+    await emitFriendData(socket.id, username);
+    await broadcastPresence(username, true);
+  });
+
+  socket.on('friends_refresh', async () => {
+    const username = socketUser.get(socket.id);
+    if (username) await emitFriendData(socket.id, username);
+  });
+
+  socket.on('friend_request', async (data: { to: string }) => {
+    const from = socketUser.get(socket.id);
+    const to = (data.to || '').trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
+    if (!from || !to) return;
+    try {
+      const { data: result } = await supabase.rpc('mog_send_friend_request', { p_from: from, p_to: to });
+      const status: string = result?.status ?? 'error';
+      socket.emit('friend_request_result', { to, status });
+      if (status === 'requested' || status === 'accepted') {
+        await refreshUser(from); // outgoing/accepted may change our list
+        await refreshUser(to); // they get a new pending request (or a new friend)
+      }
+    } catch (e) {
+      console.error('friend_request error:', e);
+      socket.emit('friend_request_result', { to, status: 'error' });
+    }
+  });
+
+  socket.on('friend_respond', async (data: { from: string; accept: boolean }) => {
+    const user = socketUser.get(socket.id);
+    if (!user || !data.from) return;
+    try {
+      await supabase.rpc('mog_respond_friend_request', {
+        p_user: user,
+        p_from: data.from,
+        p_accept: !!data.accept,
+      });
+      await refreshUser(user);
+      await refreshUser(data.from);
+    } catch (e) {
+      console.error('friend_respond error:', e);
+    }
+  });
+
+  // ── Direct challenge a friend (live) ──────────────────────────────────────
+  socket.on('challenge_friend', async (data: { to: string; mode: GameModeId; peerId: string }) => {
+    const from = socketUser.get(socket.id);
+    if (!from) return;
+    const to = (data.to || '').trim();
     const mode: GameModeId = data.mode === 'pose_hold' ? 'pose_hold' : 'pushup_repoff';
-    players.set(socket.id, { username: data.username || 'Anonymous', peerId: data.peerId, mode });
+    if (!isOnline(to)) {
+      socket.emit('challenge_failed', { to, reason: 'offline' });
+      return;
+    }
+    pendingChallenges.set(to, { fromUser: from, fromSocket: socket.id, fromPeerId: data.peerId, mode });
+    for (const sid of socketsFor(to)) {
+      io.to(sid).emit('challenge_received', { from, mode });
+    }
+    // Auto-expire so a stuck challenge doesn't trap the challenger forever.
+    setTimeout(() => {
+      const p = pendingChallenges.get(to);
+      if (p && p.fromSocket === socket.id) {
+        pendingChallenges.delete(to);
+        socket.emit('challenge_expired', { to });
+      }
+    }, 30000);
+  });
+
+  socket.on('challenge_accept', async (data: { from: string; peerId: string }) => {
+    const me = socketUser.get(socket.id);
+    if (!me) return;
+    const challenge = pendingChallenges.get(me);
+    if (!challenge || challenge.fromUser !== data.from || !io.sockets.sockets.has(challenge.fromSocket)) {
+      socket.emit('challenge_failed', { to: data.from, reason: 'expired' });
+      pendingChallenges.delete(me);
+      return;
+    }
+    pendingChallenges.delete(me);
+
+    const { fromSocket, fromPeerId, mode } = challenge;
+    const roomId = generateRoomId();
+    const pose = mode === 'pose_hold' ? POSE_IDS[Math.floor(Math.random() * POSE_IDS.length)] : null;
+
+    players.set(fromSocket, { username: challenge.fromUser, peerId: fromPeerId, mode });
+    players.set(socket.id, { username: me, peerId: data.peerId, mode });
+    rooms.set(roomId, { members: [fromSocket, socket.id], mode, pose, scores: {}, resolved: false });
+
+    io.sockets.sockets.get(fromSocket)?.join(roomId);
+    socket.join(roomId);
+
+    // Challenger initiates the WebRTC call (same contract as matchmaking).
+    io.to(fromSocket).emit('matched', {
+      mode, pose, partnerPeerId: data.peerId, partnerName: me, initiator: true,
+    });
+    socket.emit('matched', {
+      mode, pose, partnerPeerId: fromPeerId, partnerName: challenge.fromUser, initiator: false,
+    });
+    console.log(`[=] ${roomId} challenge (${mode}${pose ? '/' + pose : ''}): ${challenge.fromUser} vs ${me}`);
+  });
+
+  socket.on('cancel_challenge', () => {
+    for (const [addressee, c] of pendingChallenges) {
+      if (c.fromSocket === socket.id) {
+        pendingChallenges.delete(addressee);
+        for (const sid of socketsFor(addressee)) io.to(sid).emit('challenge_canceled');
+      }
+    }
+  });
+
+  socket.on('challenge_decline', (data: { from: string }) => {
+    const me = socketUser.get(socket.id);
+    if (!me) return;
+    const challenge = pendingChallenges.get(me);
+    if (challenge && challenge.fromUser === data.from) {
+      pendingChallenges.delete(me);
+      io.to(challenge.fromSocket).emit('challenge_declined', { by: me });
+    }
+  });
+
+  socket.on('join_queue', async (data: { token?: string; username?: string; peerId: string; mode: GameModeId }) => {
+    // Only authenticated accounts may join ranked matchmaking — this is what
+    // keeps fake/spoofed usernames off the leaderboard. The username comes from
+    // the already-authenticated socket (or the token), never the client field.
+    const username = socketUser.get(socket.id) ?? (await verifyUsername(data.token));
+    if (!username) {
+      socket.emit('auth_error', 'Log in to play ranked matches.');
+      return;
+    }
+
+    const mode: GameModeId = data.mode === 'pose_hold' ? 'pose_hold' : 'pushup_repoff';
+    players.set(socket.id, { username, peerId: data.peerId, mode });
 
     // Register player on the leaderboard (idempotent)
-    supabase.rpc('mog_register_player', { p_username: data.username || 'Anonymous' }).then(
+    supabase.rpc('mog_register_player', { p_username: username }).then(
       () => {},
       (e: unknown) => console.error('register error', e)
     );
@@ -290,6 +506,29 @@ io.on('connection', (socket) => {
       rooms.delete(id);
     }
     players.delete(socket.id);
+
+    // Lobby cleanup: drop presence, expire any challenge this socket was party
+    // to, and tell friends if the user went fully offline.
+    const username = socketUser.get(socket.id);
+    if (username) {
+      socketUser.delete(socket.id);
+      const set = online.get(username);
+      set?.delete(socket.id);
+      if (set && set.size === 0) {
+        online.delete(username);
+        void broadcastPresence(username, false);
+      }
+      // I was the challenged user → forget the incoming challenge.
+      pendingChallenges.delete(username);
+    }
+    // I was the challenger → cancel and notify the target.
+    for (const [addressee, c] of pendingChallenges) {
+      if (c.fromSocket === socket.id) {
+        pendingChallenges.delete(addressee);
+        for (const sid of socketsFor(addressee)) io.to(sid).emit('challenge_canceled');
+      }
+    }
+
     console.log(`[-] ${socket.id} disconnected`);
   });
 });
@@ -303,6 +542,18 @@ app.get('/leaderboard', async (_req, res) => {
     .limit(50);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ players: data });
+});
+
+// A single player's stats (for the lobby account card / rank tier). Returns
+// null when the player hasn't been registered yet.
+app.get('/player/:username', async (req, res) => {
+  const { data, error } = await supabase
+    .from('mog_players')
+    .select('username, elo, wins, losses, matches, best_pose_score')
+    .eq('username', req.params.username)
+    .maybeSingle();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ player: data });
 });
 
 app.get('/health', (_req, res) =>

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { detectPose, drawPose } from './poseDetector';
+import { detectPose, drawPose, calcPushupMetrics, pushupCue, type PushupCue } from './poseDetector';
 import type { PoseLandmarkerResult } from '@mediapipe/tasks-vision';
 
 interface Props {
@@ -12,20 +12,35 @@ interface Props {
   secondaryIsScore?: boolean; // color-code 0-100
   isLocal?: boolean;
   videoStatus?: 'idle' | 'connecting' | 'connected' | 'failed';
+  showFormOverlay?: boolean; // live pushup coaching HUD (local + pushup mode)
   onPoseResult?: (result: PoseLandmarkerResult) => void;
 }
 
+type FormHud = { cue: PushupCue; depth: number; angle: number };
+
+const TONE_CLASS: Record<PushupCue['tone'], string> = {
+  idle: 'bg-zinc-700 text-white',
+  down: 'bg-sky-500 text-white',
+  up: 'bg-green-400 text-black',
+  invalid: 'bg-amber-500 text-black',
+};
+
 export function VideoFeed({
   stream, label, primaryValue, primaryLabel, secondaryValue, secondaryLabel,
-  secondaryIsScore, isLocal, videoStatus, onPoseResult,
+  secondaryIsScore, isLocal, videoStatus, showFormOverlay, onPoseResult,
 }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef<number>(0);
   const lastTimestamp = useRef<number>(0);
   const cbRef = useRef(onPoseResult);
+  const overlayRef = useRef(showFormOverlay);
+  const lastHudRef = useRef(0);
   const [muted, setMuted] = useState(true);
+  const [hud, setHud] = useState<FormHud | null>(null);
   useEffect(() => { cbRef.current = onPoseResult; }, [onPoseResult]);
+  // HUD only renders when showFormOverlay is true, so no need to clear it here.
+  useEffect(() => { overlayRef.current = showFormOverlay; }, [showFormOverlay]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -58,7 +73,20 @@ export function VideoFeed({
         lastTimestamp.current = ts;
         const result = detectPose(video, ts);
         if (result) {
-          drawPose(canvas, result, video.videoWidth || 640, video.videoHeight || 480);
+          let color = '#00ff88';
+          if (overlayRef.current) {
+            const lm = result.landmarks[0];
+            const m = lm ? calcPushupMetrics(lm) : null;
+            if (m) {
+              color = m.valid ? '#00ff88' : '#f59e0b';
+              // Throttle HUD state updates to ~12fps to keep re-renders cheap.
+              if (ts - lastHudRef.current > 80) {
+                lastHudRef.current = ts;
+                setHud({ cue: pushupCue(m), depth: m.depth, angle: Math.round(m.elbowAngle) });
+              }
+            }
+          }
+          drawPose(canvas, result, video.videoWidth || 640, video.videoHeight || 480, color);
           cbRef.current?.(result);
         }
       }
@@ -87,6 +115,27 @@ export function VideoFeed({
           className="absolute inset-0 w-full h-full pointer-events-none"
           style={{ transform: 'scaleX(-1)' }}
         />
+      )}
+
+      {/* Live pushup form HUD — DOM overlay (not mirrored, so text reads normally) */}
+      {isLocal && showFormOverlay && hud && (
+        <>
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 pointer-events-none">
+            <span className={`px-4 py-1.5 rounded-full text-sm font-black tracking-wide shadow-lg ${TONE_CLASS[hud.cue.tone]}`}>
+              {hud.cue.text}
+            </span>
+          </div>
+          <div className="absolute left-3 top-1/4 bottom-1/4 flex flex-col items-center gap-1 pointer-events-none">
+            <span className="text-[10px] font-bold text-zinc-300 bg-black/50 rounded px-1">{hud.angle}°</span>
+            <div className="flex-1 w-2.5 rounded-full bg-black/50 overflow-hidden flex flex-col-reverse">
+              <div
+                className="w-full bg-gradient-to-t from-green-400 to-emerald-300 transition-[height] duration-100"
+                style={{ height: `${Math.min(100, Math.max(0, hud.depth))}%` }}
+              />
+            </div>
+            <span className="text-[10px] font-bold text-zinc-400 bg-black/50 rounded px-1">depth</span>
+          </div>
+        </>
       )}
       {!isLocal && stream && (
         <button

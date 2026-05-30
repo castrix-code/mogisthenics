@@ -2,15 +2,27 @@ import { useEffect, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { GAME_MODES, type GameModeId } from './poses';
 import { Leaderboard } from './Leaderboard';
+import { RankBadge } from './RankBadge';
+import type { Friend, FriendRequest } from './friends';
 import { supabase, signIn, signUp, signOut, getUsername } from './supabase';
+
+const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3001';
 
 interface Props {
   onFindPartner: (username: string, mode: GameModeId) => void;
+  onTrain: (username: string, mode: GameModeId) => void;
+  friends: Friend[];
+  friendRequests: FriendRequest[];
+  onAddFriend: (username: string) => void;
+  onRespondFriend: (from: string, accept: boolean) => void;
+  onChallenge: (username: string, mode: GameModeId) => void;
 }
 
 type AuthMode = 'login' | 'signup';
 
-export function LandingPage({ onFindPartner }: Props) {
+export function LandingPage({
+  onFindPartner, onTrain, friends, friendRequests, onAddFriend, onRespondFriend, onChallenge,
+}: Props) {
   const [session, setSession] = useState<Session | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
 
@@ -24,6 +36,25 @@ export function LandingPage({ onFindPartner }: Props) {
 
   // Game state (shown after auth)
   const [mode, setMode] = useState<GameModeId>('pushup_repoff');
+  const [accountElo, setAccountElo] = useState<number | null>(null);
+  const [friendSearch, setFriendSearch] = useState('');
+
+  // Pull the logged-in player's ELO so we can show their rank tier.
+  useEffect(() => {
+    const name = getUsername(session);
+    let cancelled = false;
+    (async () => {
+      if (!name) { if (!cancelled) setAccountElo(null); return; }
+      try {
+        const r = await fetch(`${SERVER_URL}/player/${encodeURIComponent(name)}`);
+        const d = await r.json();
+        if (!cancelled) setAccountElo(d.player?.elo ?? 1000);
+      } catch {
+        if (!cancelled) setAccountElo(1000);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [session]);
 
   // Restore session on mount and listen for changes
   useEffect(() => {
@@ -78,6 +109,14 @@ export function LandingPage({ onFindPartner }: Props) {
     setUsername('');
     setPassword('');
     setConfirmPassword('');
+  };
+
+  const submitFriend = () => {
+    const name = friendSearch.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
+    if (name.length >= 2) {
+      onAddFriend(name);
+      setFriendSearch('');
+    }
   };
 
   // While checking session, show nothing to avoid flash
@@ -192,7 +231,10 @@ export function LandingPage({ onFindPartner }: Props) {
               <div className="flex items-center justify-between bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-3">
                 <div>
                   <p className="text-xs text-zinc-500">Logged in as</p>
-                  <p className="text-white font-black text-lg">{loggedInUsername}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="text-white font-black text-lg">{loggedInUsername}</p>
+                    {accountElo !== null && <RankBadge elo={accountElo} showName />}
+                  </div>
                 </div>
                 <button
                   onClick={handleLogout}
@@ -238,9 +280,84 @@ export function LandingPage({ onFindPartner }: Props) {
               >
                 Find a Partner →
               </button>
+              <button
+                onClick={() => onTrain(loggedInUsername!, mode)}
+                className="border border-zinc-700 hover:border-green-400 text-zinc-300 hover:text-green-400 font-bold text-base px-10 py-3 rounded-2xl transition-all duration-150 active:scale-95"
+              >
+                🏋️ Train Solo (no ranking)
+              </button>
               <p className="text-zinc-600 text-xs text-center">
                 Camera & mic required · Video is peer-to-peer · ELO ranked
               </p>
+
+              {/* ── Friends ─────────────────────────────────────────── */}
+              <div className="bg-zinc-900 border border-zinc-700 rounded-2xl p-5 flex flex-col gap-4">
+                <h3 className="font-black text-white text-lg flex items-center gap-2">
+                  <span>🧑‍🤝‍🧑</span> Friends
+                </h3>
+
+                {/* Add by username */}
+                <div className="flex gap-2">
+                  <input
+                    value={friendSearch}
+                    onChange={(e) => setFriendSearch(e.target.value.slice(0, 20))}
+                    placeholder="add by username"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    onKeyDown={(e) => e.key === 'Enter' && submitFriend()}
+                    className="flex-1 bg-zinc-800 border border-zinc-600 rounded-xl px-3 py-2 text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-green-400 transition-colors"
+                  />
+                  <button
+                    onClick={submitFriend}
+                    className="bg-green-400 hover:bg-green-300 text-black font-bold text-sm px-4 rounded-xl transition-colors"
+                  >
+                    Add
+                  </button>
+                </div>
+
+                {/* Incoming requests */}
+                {friendRequests.length > 0 && (
+                  <div className="flex flex-col gap-1">
+                    <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wide">Requests</p>
+                    {friendRequests.map((r) => (
+                      <div key={r.username} className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-zinc-800/60">
+                        <span className="flex-1 text-white text-sm font-semibold truncate">{r.username}</span>
+                        <button onClick={() => onRespondFriend(r.username, true)}
+                          className="text-green-400 hover:text-green-300 text-xs font-bold">Accept</button>
+                        <button onClick={() => onRespondFriend(r.username, false)}
+                          className="text-zinc-500 hover:text-red-400 text-xs">Decline</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Friends list */}
+                <div className="flex flex-col gap-1">
+                  {friends.length === 0 && friendRequests.length === 0 && (
+                    <p className="text-zinc-600 text-sm text-center py-2">
+                      No friends yet — add someone by username.
+                    </p>
+                  )}
+                  {friends.map((f) => (
+                    <div key={f.username} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-zinc-800">
+                      <span className={`w-2 h-2 rounded-full ${f.online ? 'bg-green-400' : 'bg-zinc-600'}`}
+                        title={f.online ? 'online' : 'offline'} />
+                      <span className="flex-1 text-white text-sm font-semibold truncate">{f.username}</span>
+                      <RankBadge elo={f.elo} />
+                      <button
+                        disabled={!f.online}
+                        onClick={() => onChallenge(f.username, mode)}
+                        className="text-xs font-bold px-2.5 py-1 rounded-lg border transition-colors disabled:opacity-40 disabled:cursor-not-allowed border-green-400/40 text-green-400 enabled:hover:bg-green-400 enabled:hover:text-black"
+                      >
+                        {f.online ? 'Challenge' : 'Offline'}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-zinc-600 text-[11px] text-center">
+                  Challenge sends a live invite in your selected mode above.
+                </p>
+              </div>
             </>
           )}
         </div>

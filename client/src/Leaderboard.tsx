@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import { RankBadge } from './RankBadge';
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3001';
 
@@ -70,6 +71,7 @@ export function Leaderboard({ highlightUser, refreshKey, compact }: Props) {
               <span className={`flex-1 font-semibold truncate ${isMe ? 'text-green-400' : 'text-white'}`}>
                 {e.username}
               </span>
+              {!compact && <RankBadge elo={e.elo} />}
               {!compact && (
                 <span className="text-xs text-zinc-500 tabular-nums">
                   {e.wins}W-{e.losses}L

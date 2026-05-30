@@ -1,5 +1,9 @@
 import { useCallback, useRef, useState } from 'react';
 import { getPoseById, scorePose } from './poses';
+import { keypointsVisible, type Landmark } from './poseDetector';
+
+// Core body joints (shoulders + hips) that must be tracked for a frame to count.
+const CORE_KEYPOINTS = [11, 12, 23, 24];
 
 // Scores a held pose over the round. The live score is the current match;
 // the final score is the time-weighted average once enough frames are in,
@@ -12,10 +16,13 @@ export function usePoseHold(poseId: string | null) {
   const [finalScore, setFinalScore] = useState(0);
 
   const processPose = useCallback(
-    (landmarks: { x: number; y: number; z: number }[]) => {
+    (landmarks: Landmark[]) => {
       if (!poseId) return;
       const template = getPoseById(poseId);
       if (!template) return;
+      // Only score frames where the athlete is actually in view; empty/garbage
+      // frames shouldn't drag the time-weighted average up or down.
+      if (!keypointsVisible(landmarks, CORE_KEYPOINTS, 0.5)) return;
       const result = scorePose(template, landmarks);
       if (!result) return;
 
