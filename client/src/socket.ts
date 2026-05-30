@@ -35,14 +35,17 @@ export async function fetchIceServers(): Promise<RTCIceServer[]> {
   }
 
   try {
+    // Metered uses "secretKey" as the query param (not "apiKey").
     const res = await fetch(
-      `https://${METERED_DOMAIN}/api/v1/turn/credentials?apiKey=${METERED_API_KEY}`
+      `https://${METERED_DOMAIN}/api/v1/turn/credentials?secretKey=${METERED_API_KEY}`
     );
-    const servers: RTCIceServer[] = await res.json();
-    console.log('[TURN] Fetched', servers.length, 'ICE servers from metered.live');
-    return servers;
+    if (!res.ok) throw new Error(`Metered API returned ${res.status}`);
+    const servers = await res.json();
+    if (!Array.isArray(servers) || servers.length === 0) throw new Error('Empty/invalid response');
+    console.log('[TURN] Fetched', servers.length, 'ICE servers from metered.live ✓');
+    return servers as RTCIceServer[];
   } catch (err) {
-    console.error('[TURN] Failed to fetch metered credentials, using fallback', err);
+    console.error('[TURN] Metered fetch failed, using openrelay fallback:', err);
     return fallback;
   }
 }
