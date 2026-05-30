@@ -1,0 +1,105 @@
+import { useEffect, useRef } from 'react';
+import { detectPose, drawPose } from './poseDetector';
+import type { PoseLandmarkerResult } from '@mediapipe/tasks-vision';
+
+interface Props {
+  stream: MediaStream | null;
+  label: string;
+  primaryValue: number;
+  primaryLabel: string;
+  secondaryValue: number;
+  secondaryLabel: string;
+  secondaryIsScore?: boolean; // color-code 0-100
+  isLocal?: boolean;
+  onPoseResult?: (result: PoseLandmarkerResult) => void;
+}
+
+export function VideoFeed({
+  stream, label, primaryValue, primaryLabel, secondaryValue, secondaryLabel,
+  secondaryIsScore, isLocal, onPoseResult,
+}: Props) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const rafRef = useRef<number>(0);
+  const lastTimestamp = useRef<number>(0);
+  const cbRef = useRef(onPoseResult);
+  useEffect(() => { cbRef.current = onPoseResult; }, [onPoseResult]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !stream) return;
+    video.srcObject = stream;
+    video.play().catch(() => {});
+  }, [stream]);
+
+  // Pose detection loop, local feed only
+  useEffect(() => {
+    if (!isLocal) return;
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas) return;
+    let running = true;
+
+    function loop(ts: number) {
+      if (!running || !video || !canvas) return;
+      if (video.readyState >= 2 && ts !== lastTimestamp.current) {
+        lastTimestamp.current = ts;
+        const result = detectPose(video, ts);
+        if (result) {
+          drawPose(canvas, result, video.videoWidth || 640, video.videoHeight || 480);
+          cbRef.current?.(result);
+        }
+      }
+      rafRef.current = requestAnimationFrame(loop);
+    }
+    rafRef.current = requestAnimationFrame(loop);
+    return () => { running = false; cancelAnimationFrame(rafRef.current); };
+  }, [isLocal]);
+
+  const scoreColor = (v: number) =>
+    v >= 80 ? 'text-green-400' : v >= 50 ? 'text-yellow-400' : 'text-red-400';
+
+  return (
+    <div className="relative flex-1 rounded-xl overflow-hidden bg-zinc-900 border border-zinc-700 min-h-[300px]">
+      <video
+        ref={videoRef}
+        autoPlay
+        muted={isLocal}
+        playsInline
+        className="w-full h-full object-cover"
+        style={{ transform: isLocal ? 'scaleX(-1)' : undefined }}
+      />
+      {isLocal && (
+        <canvas
+          ref={canvasRef}
+          className="absolute inset-0 w-full h-full pointer-events-none"
+          style={{ transform: 'scaleX(-1)' }}
+        />
+      )}
+      {!stream && (
+        <div className="absolute inset-0 flex items-center justify-center text-zinc-500 text-sm">
+          Waiting for video…
+        </div>
+      )}
+
+      <div className="absolute top-3 left-3">
+        <span className="text-xs font-semibold bg-black/60 text-white px-2 py-0.5 rounded-full">
+          {label}
+        </span>
+      </div>
+
+      <div className="absolute bottom-3 left-3 right-3 flex justify-between items-end">
+        <div className="bg-black/70 rounded-lg px-3 py-2">
+          <div className="text-3xl font-black text-white leading-none">{primaryValue}</div>
+          <div className="text-xs text-zinc-400 mt-0.5">{primaryLabel}</div>
+        </div>
+        <div className="bg-black/70 rounded-lg px-3 py-2 text-right">
+          <div className={`text-2xl font-black leading-none ${secondaryIsScore ? scoreColor(secondaryValue) : 'text-white'}`}>
+            {secondaryValue}
+          </div>
+          <div className="text-xs text-zinc-400 mt-0.5">{secondaryLabel}</div>
+        </div>
+      </div>
+    </div>
+  );
+}

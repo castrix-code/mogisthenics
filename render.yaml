@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: mogisthenics-server
+    runtime: node
+    rootDir: server
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false          # set in Render dashboard (secret)
+      - key: SUPABASE_KEY
+        sync: false          # set in Render dashboard
+      - key: SUPABASE_URL
+        value: https://pbrputyaipirogfvigxl.supabase.co
+      - key: CLIENT_URL
+        sync: false          # set to your Vercel URL after the frontend deploys (optional)
