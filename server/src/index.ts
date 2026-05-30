@@ -140,9 +140,11 @@ async function coachingTip(mode: GameModeId, pose: string | null, score: number)
       : `held a ${pose?.replace('_', ' ')} pose for 15 seconds with a form match score of ${score}/100`;
   try {
     const res = await genai.models.generateContent({
-      model: 'gemini-2.0-flash',
+      model: 'gemini-2.5-flash',
       contents: `A calisthenics athlete just ${ctx}. Give one specific, actionable coaching tip in 1-2 sentences. Be direct and encouraging.`,
-      config: { maxOutputTokens: 120, temperature: 0.9 },
+      // thinkingBudget: 0 disables the model's reasoning pass so the whole
+      // token budget goes to the visible tip (faster + cheaper for one-liners).
+      config: { maxOutputTokens: 150, temperature: 0.9, thinkingConfig: { thinkingBudget: 0 } },
     });
     const text = res.text?.trim();
     if (text) return text;
