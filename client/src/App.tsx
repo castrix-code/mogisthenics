@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Peer, { type MediaConnection } from 'peerjs';
 import type { PoseLandmarkerResult } from '@mediapipe/tasks-vision';
-import { socket, peerOptions } from './socket';
+import { socket, peerOptions, fetchIceServers } from './socket';
 import { initPoseDetector } from './poseDetector';
 import { useRepCounter } from './useRepCounter';
 import { usePoseHold } from './usePoseHold';
@@ -154,11 +154,14 @@ export default function App() {
       initPoseDetector().then(() => setPoseReady(true)).catch(console.error);
     }
 
-    const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    const [stream, iceServers] = await Promise.all([
+      navigator.mediaDevices.getUserMedia({ video: true, audio: true }),
+      fetchIceServers(),
+    ]);
     streamRef.current = stream;
     setLocalStream(stream);
 
-    const peer = new Peer(peerOptions());
+    const peer = new Peer(peerOptions(iceServers));
     peerRef.current = peer;
 
     peer.on('open', (peerId) => {
