@@ -27,7 +27,7 @@ challenge, and climb a global ELO leaderboard.
 | Video | PeerJS (WebRTC) |
 | Pose | MediaPipe Tasks Vision (PoseLandmarker) |
 | DB | Supabase (Postgres) |
-| AI | Anthropic API (Claude Haiku) |
+| AI | Google Gemini API (gemini-2.0-flash) |
 
 ## Setup
 
@@ -50,7 +50,7 @@ Open two browser windows (or two devices) to match with yourself.
 
 **server/.env**
 ```
-ANTHROPIC_API_KEY=...      # required for coaching tips (falls back gracefully)
+GEMINI_API_KEY=...         # required for coaching tips (falls back gracefully)
 CLIENT_URL=http://localhost:5173
 PORT=3001
 SUPABASE_URL=...

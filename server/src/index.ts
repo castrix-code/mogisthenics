@@ -3,7 +3,7 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import Anthropic from '@anthropic-ai/sdk';
+import { GoogleGenAI } from '@google/genai';
 import { createClient } from '@supabase/supabase-js';
 
 dotenv.config();
@@ -24,7 +24,7 @@ const io = new Server(httpServer, {
 app.use(cors({ origin: corsOrigin }));
 app.use(express.json());
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const genai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const supabase = createClient(
   process.env.SUPABASE_URL || '',
   process.env.SUPABASE_KEY || ''
@@ -139,20 +139,15 @@ async function coachingTip(mode: GameModeId, pose: string | null, score: number)
       ? `completed a 60-second pushup rep-off with ${score} reps`
       : `held a ${pose?.replace('_', ' ')} pose for 15 seconds with a form match score of ${score}/100`;
   try {
-    const msg = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 120,
-      messages: [
-        {
-          role: 'user',
-          content: `A calisthenics athlete just ${ctx}. Give one specific, actionable coaching tip in 1-2 sentences. Be direct and encouraging.`,
-        },
-      ],
+    const res = await genai.models.generateContent({
+      model: 'gemini-2.0-flash',
+      contents: `A calisthenics athlete just ${ctx}. Give one specific, actionable coaching tip in 1-2 sentences. Be direct and encouraging.`,
+      config: { maxOutputTokens: 120, temperature: 0.9 },
     });
-    const block = msg.content[0];
-    if (block.type === 'text') return block.text;
+    const text = res.text?.trim();
+    if (text) return text;
   } catch (e) {
-    console.error('Anthropic error:', e);
+    console.error('Gemini error:', e);
   }
   return 'Keep your core braced and movements controlled — consistency beats intensity.';
 }
