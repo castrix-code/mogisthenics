@@ -111,15 +111,34 @@ export default function App() {
     };
   }, [startRound, partnerName]);
 
-  // Broadcast live stats to partner
+  // Keep the latest live stats in refs so the broadcast interval can read them
+  // without depending on React render timing.
+  const liveValueRef = useRef(0);
+  const liveSecondaryRef = useRef(0);
+  useEffect(() => {
+    if (mode === 'pushup_repoff') {
+      liveValueRef.current = rep.reps;
+      liveSecondaryRef.current = rep.formScore;
+    } else {
+      liveValueRef.current = pose.liveScore;
+      liveSecondaryRef.current = pose.finalScore;
+    }
+  }, [mode, rep.reps, rep.formScore, pose.liveScore, pose.finalScore]);
+
+  // Broadcast live stats to the partner on a steady interval for the whole
+  // round — guarantees the opponent's count keeps updating regardless of how
+  // often React re-renders.
   useEffect(() => {
     if (appState !== 'in_round' || !timerRunning) return;
-    if (mode === 'pushup_repoff') {
-      socket.emit('live_update', { value: rep.reps, secondary: rep.formScore });
-    } else {
-      socket.emit('live_update', { value: pose.liveScore, secondary: pose.finalScore });
-    }
-  }, [appState, timerRunning, mode, rep.reps, rep.formScore, pose.liveScore, pose.finalScore]);
+    const send = () =>
+      socket.emit('live_update', {
+        value: liveValueRef.current,
+        secondary: liveSecondaryRef.current,
+      });
+    send();
+    const iv = setInterval(send, 300);
+    return () => clearInterval(iv);
+  }, [appState, timerRunning]);
 
   const startSession = useCallback(async (name: string, selectedMode: GameModeId) => {
     setUsername(name);
