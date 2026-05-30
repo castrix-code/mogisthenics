@@ -46,8 +46,10 @@ export default function App() {
   useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { poseIdRef.current = poseId; }, [poseId]);
 
-  const beginRound = useCallback((remote: MediaStream) => {
-    setRemoteStream(remote);
+  // Start the round purely off the Socket.io match signal — the game (timer,
+  // reps, live opponent count, scoring) never waits on the WebRTC video, which
+  // can fail on strict networks. Video, when it connects, is a bonus overlay.
+  const startRound = useCallback(() => {
     setAppState('in_round');
     setTimerRunning(true);
   }, []);
@@ -66,9 +68,14 @@ export default function App() {
       modeRef.current = data.mode;
       poseIdRef.current = data.pose;
 
+      // Round starts immediately for both players — does NOT wait on video.
+      startRound();
+
+      // Best-effort video: the initiator calls; remote stream just populates
+      // the partner panel if/when it arrives.
       if (data.initiator && peerRef.current && streamRef.current) {
         const call = peerRef.current.call(data.partnerPeerId, streamRef.current);
-        call.on('stream', beginRound);
+        call.on('stream', setRemoteStream);
       }
     });
 
@@ -102,7 +109,7 @@ export default function App() {
       socket.off('round_result');
       socket.off('partner_left');
     };
-  }, [beginRound, partnerName]);
+  }, [startRound, partnerName]);
 
   // Broadcast live stats to partner
   useEffect(() => {
@@ -136,14 +143,14 @@ export default function App() {
       socket.emit('join_queue', { username: name, peerId, mode: selectedMode });
     });
 
-    // Non-initiator answers
+    // Non-initiator answers; remote stream just fills the partner panel.
     peer.on('call', (call: MediaConnection) => {
       call.answer(stream);
-      call.on('stream', beginRound);
+      call.on('stream', setRemoteStream);
     });
 
     peer.on('error', console.error);
-  }, [beginRound]);
+  }, []);
 
   const handleRoundEnd = useCallback(() => {
     setTimerRunning(false);

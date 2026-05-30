@@ -18,5 +18,19 @@ export function peerOptions(): PeerOptions {
     port: url.port ? Number(url.port) : secure ? 443 : 80,
     path: '/peerjs',
     secure,
+    // STUN for NAT discovery + a free TURN relay so video can traverse strict
+    // NATs. Best-effort: if TURN is unavailable, ICE falls back to STUN/host
+    // and the game still runs (gameplay is synced over Socket.io, not WebRTC).
+    config: {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        {
+          urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443'],
+          username: 'openrelayproject',
+          credential: 'openrelayproject',
+        },
+      ],
+    },
   };
 }

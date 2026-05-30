@@ -77,8 +77,16 @@ export function VideoFeed({
         />
       )}
       {!stream && (
-        <div className="absolute inset-0 flex items-center justify-center text-zinc-500 text-sm">
-          Waiting for video…
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center px-4">
+          {isLocal ? (
+            <span className="text-zinc-500 text-sm">Starting camera…</span>
+          ) : (
+            <>
+              <div className="w-2.5 h-2.5 rounded-full bg-green-400 animate-pulse" />
+              <span className="text-zinc-300 text-sm font-semibold">{label} is live</span>
+              <span className="text-zinc-600 text-xs">Video not connected — reps syncing in real time</span>
+            </>
+          )}
         </div>
       )}
 
