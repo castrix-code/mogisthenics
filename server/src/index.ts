@@ -286,5 +286,13 @@ app.get('/health', (_req, res) =>
   res.json({ status: 'ok', queues: { pushup: queues.pushup_repoff.length, pose: queues.pose_hold.length }, rooms: rooms.size })
 );
 
+// Friendly root so visiting the API host directly doesn't look broken.
+app.get('/', (_req, res) =>
+  res.send(
+    'Mogisthenics API is running 💪 — this is the backend, not the app. ' +
+      'Play at https://mogisthenics.vercel.app'
+  )
+);
+
 const PORT = process.env.PORT || 3001;
 httpServer.listen(PORT, () => console.log(`Server running on port ${PORT}`));
