@@ -85,32 +85,29 @@ export function pushupCue(m: { elbowAngle: number; valid: boolean }): PushupCue 
 export type Landmark = { x: number; y: number; z: number; visibility?: number };
 
 // Are every one of the given landmark indices confidently tracked this frame?
-// MediaPipe still emits a full 33-point skeleton when no one (or only part of a
-// body) is in view, but those points carry low visibility — gating on this is
-// the single biggest defense against glitch reps.
+// IMPORTANT: @mediapipe/tasks-vision often returns visibility = 0 (or undefined)
+// for all joints even when the person is clearly in frame, so we only gate on
+// visibility when the model is actually reporting it — otherwise this would
+// reject every frame and nothing would ever count.
 export function keypointsVisible(
   landmarks: Landmark[],
   indices: number[],
   threshold = 0.5
 ): boolean {
+  let maxV = 0;
+  for (const i of indices) maxV = Math.max(maxV, landmarks[i]?.visibility ?? 0);
+  if (maxV < 0.1) return true; // model isn't providing visibility — don't gate
   return indices.every((i) => (landmarks[i]?.visibility ?? 0) >= threshold);
-}
-
-// Torso tilt from the vertical axis in degrees (0 = upright, 90 = horizontal).
-function torsoTilt(lm: Landmark[]): number {
-  const sx = (lm[11].x + lm[12].x) / 2;
-  const sy = (lm[11].y + lm[12].y) / 2;
-  const hx = (lm[23].x + lm[24].x) / 2;
-  const hy = (lm[23].y + lm[24].y) / 2;
-  return Math.abs((Math.atan2(hx - sx, hy - sy) * 180) / Math.PI);
 }
 
 // Pushup rep counter using elbow angle
 // State machine: up (angle > 150) -> down (angle < 80) -> up = 1 rep
 export type RepState = 'up' | 'down';
 
-// Joints that must be tracked for a rep to count: both arms, shoulders, hips.
-const PUSHUP_KEYPOINTS = [11, 12, 13, 14, 15, 16, 23, 24];
+// Joints that must be tracked for a rep to count: both arms + shoulders. Hips
+// are intentionally excluded — they often sit near the frame edge during a
+// pushup and would otherwise reject valid reps.
+const PUSHUP_KEYPOINTS = [11, 12, 13, 14, 15, 16];
 
 export function calcPushupMetrics(landmarks: Landmark[]): {
   elbowAngle: number;
@@ -145,21 +142,14 @@ export function calcPushupMetrics(landmarks: Landmark[]): {
   // Depth: how low they go — map elbow angle 160->80 to 0->100
   const depth = Math.max(0, Math.min(100, ((160 - elbowAngle) / 80) * 100));
 
-  // ── Validity gates (anti-glitch / anti-cheat) ──────────────────────────────
-  // A frame only counts toward reps if it looks like a genuine pushup:
-  //  1) every arm/torso joint is confidently tracked (no phantom skeletons),
-  //  2) both arms agree — a single waving arm produces lopsided elbow angles,
-  //  3) hands are planted at/below shoulder height (on the floor, not overhead),
-  //  4) the body isn't standing bolt-upright flapping the arms.
-  // The orientation check (4) is deliberately loose so pushups facing the
-  // camera (where the torso looks near-vertical in 2D) still register.
+  // ── Validity gate (light sanity check) ─────────────────────────────────────
+  // Kept deliberately loose so real reps from any camera angle still count; the
+  // rep debounce in useRepCounter is the primary anti-cheat. We only require:
+  //  1) the joints are tracked (when the model reports visibility), and
+  //  2) both arms roughly agree — a single waving arm gives lopsided angles.
   const visible = keypointsVisible(landmarks, PUSHUP_KEYPOINTS, 0.5);
-  const symmetric = Math.abs(leftAngle - rightAngle) < 45;
-  const wristY = (lw.y + rw.y) / 2;
-  const shoulderY = (ls.y + rs.y) / 2;
-  const handsOnFloor = wristY > shoulderY - 0.15;
-  const notUpright = torsoTilt(landmarks) > 20;
-  const valid = visible && symmetric && handsOnFloor && notUpright;
+  const symmetric = Math.abs(leftAngle - rightAngle) < 60;
+  const valid = visible && symmetric;
 
   return { elbowAngle, backStraightness, depth, valid };
 }
