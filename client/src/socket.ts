@@ -6,7 +6,7 @@ const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3001';
 // Metered.live TURN service — credentials are issued dynamically via API.
 // Set VITE_METERED_API_KEY in Vercel env vars (keep this out of source control).
 const METERED_DOMAIN = import.meta.env.VITE_METERED_DOMAIN || 'mogisthenics.metered.live';
-const METERED_API_KEY = import.meta.env.VITE_METERED_API_KEY || '';
+const METERED_API_KEY = import.meta.env.VITE_METERED_API_KEY || 'ee48e24da87fc53ef4d54b293b4bc9324a18';
 
 export const socket = io(SERVER_URL, {
   autoConnect: false,
@@ -35,9 +35,8 @@ export async function fetchIceServers(): Promise<RTCIceServer[]> {
   }
 
   try {
-    // Metered uses "secretKey" as the query param (not "apiKey").
     const res = await fetch(
-      `https://${METERED_DOMAIN}/api/v1/turn/credentials?secretKey=${METERED_API_KEY}`
+      `https://${METERED_DOMAIN}/api/v1/turn/credentials?apiKey=${METERED_API_KEY}`
     );
     if (!res.ok) throw new Error(`Metered API returned ${res.status}`);
     const servers = await res.json();
