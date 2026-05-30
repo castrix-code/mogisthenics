@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Peer, { type MediaConnection } from 'peerjs';
 import type { PoseLandmarkerResult } from '@mediapipe/tasks-vision';
-import { socket } from './socket';
+import { socket, peerOptions } from './socket';
 import { initPoseDetector } from './poseDetector';
 import { useRepCounter } from './useRepCounter';
 import { usePoseHold } from './usePoseHold';
@@ -128,7 +128,7 @@ export default function App() {
     streamRef.current = stream;
     setLocalStream(stream);
 
-    const peer = new Peer();
+    const peer = new Peer(peerOptions());
     peerRef.current = peer;
 
     peer.on('open', (peerId) => {

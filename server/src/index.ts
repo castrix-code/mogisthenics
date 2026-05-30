@@ -5,17 +5,31 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import { createClient } from '@supabase/supabase-js';
+import { ExpressPeerServer } from 'peer';
 
 dotenv.config();
 
 const app = express();
 const httpServer = createServer(app);
 
-// CLIENT_URL may be a comma-separated allow-list. If unset, reflect any origin
-// (fine for a casual cross-network test; tighten by setting CLIENT_URL in prod).
-const corsOrigin: string[] | boolean = process.env.CLIENT_URL
-  ? process.env.CLIENT_URL.split(',').map((s) => s.trim())
-  : true;
+// CLIENT_URL may be a comma-separated allow-list. Matching is tolerant of a
+// trailing slash, and any *.vercel.app origin is allowed (covers preview URLs).
+// If CLIENT_URL is unset entirely, every origin is reflected (casual test mode).
+const allowList = (process.env.CLIENT_URL || '')
+  .split(',')
+  .map((s) => s.trim().replace(/\/+$/, ''))
+  .filter(Boolean);
+
+type OriginCb = (err: Error | null, allow?: boolean) => void;
+function corsOrigin(origin: string | undefined, cb: OriginCb) {
+  if (!origin) return cb(null, true); // same-origin / curl / server-to-server
+  const normalized = origin.replace(/\/+$/, '');
+  if (allowList.length === 0) return cb(null, true);
+  if (allowList.includes(normalized) || normalized.endsWith('.vercel.app')) {
+    return cb(null, true);
+  }
+  return cb(null, false);
+}
 
 const io = new Server(httpServer, {
   cors: { origin: corsOrigin, methods: ['GET', 'POST'] },
@@ -23,6 +37,11 @@ const io = new Server(httpServer, {
 
 app.use(cors({ origin: corsOrigin }));
 app.use(express.json());
+
+// Self-hosted PeerJS signaling server (the public 0.peerjs.com broker is
+// unreliable). Clients connect to this at path /peerjs over wss.
+const peerServer = ExpressPeerServer(httpServer, { path: '/' });
+app.use('/peerjs', peerServer);
 
 const genai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const supabase = createClient(
