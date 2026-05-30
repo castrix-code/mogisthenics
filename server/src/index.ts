@@ -96,6 +96,27 @@ function removeFromQueues(socketId: string) {
   });
 }
 
+// Pull the next genuinely matchable partner from a queue: a socket that is
+// still connected, known, not the joiner, and not already in a room. Dead or
+// stale entries are discarded so we never "match" a ghost.
+function nextLivePartner(mode: GameModeId, selfId: string): string | null {
+  const queue = queues[mode];
+  while (queue.length > 0) {
+    const candidate = queue.shift()!;
+    if (
+      candidate !== selfId &&
+      io.sockets.sockets.has(candidate) &&
+      players.has(candidate) &&
+      !findRoom(candidate)
+    ) {
+      return candidate;
+    }
+    // candidate is stale — drop its leftover player record
+    players.delete(candidate);
+  }
+  return null;
+}
+
 // ── ELO + match recording via Supabase RPC ───────────────────────────────────
 async function applyMatch(room: Room) {
   if (room.resolved) return;
@@ -188,16 +209,18 @@ io.on('connection', (socket) => {
     );
 
     removeFromQueues(socket.id);
-    const queue = queues[mode];
+    // If the joiner is somehow still attached to an old room, tear it down.
+    const stale = findRoom(socket.id);
+    if (stale) {
+      io.to(partnerOf(socket.id, stale[1])).emit('partner_left');
+      rooms.delete(stale[0]);
+    }
 
-    if (queue.length > 0) {
-      const partnerId = queue.shift()!;
+    const partnerId = nextLivePartner(mode, socket.id);
+
+    if (partnerId) {
       const me = players.get(socket.id)!;
-      const partner = players.get(partnerId);
-      if (!partner) {
-        queue.push(socket.id);
-        return socket.emit('waiting');
-      }
+      const partner = players.get(partnerId)!;
 
       const roomId = generateRoomId();
       const pose = mode === 'pose_hold' ? POSE_IDS[Math.floor(Math.random() * POSE_IDS.length)] : null;
@@ -214,7 +237,7 @@ io.on('connection', (socket) => {
       });
       console.log(`[=] ${roomId} (${mode}${pose ? '/' + pose : ''}): ${partner.username} vs ${me.username}`);
     } else {
-      queue.push(socket.id);
+      queues[mode].push(socket.id);
       socket.emit('waiting');
     }
   });
@@ -293,6 +316,18 @@ app.get('/', (_req, res) =>
       'Play at https://mogisthenics.vercel.app'
   )
 );
+
+// Periodic sweep: drop rooms whose members have both vanished, and prune dead
+// socket IDs from the queues, so stale state can't corrupt matchmaking.
+setInterval(() => {
+  for (const [id, room] of rooms) {
+    const [a, b] = room.members;
+    if (!io.sockets.sockets.has(a) && !io.sockets.sockets.has(b)) rooms.delete(id);
+  }
+  (Object.keys(queues) as GameModeId[]).forEach((m) => {
+    queues[m] = queues[m].filter((sid) => io.sockets.sockets.has(sid));
+  });
+}, 20000);
 
 const PORT = process.env.PORT || 3001;
 httpServer.listen(PORT, () => console.log(`Server running on port ${PORT}`));
